@@ -1,0 +1,202 @@
+-- Configurações 
+local Settings = {
+    ESP_Enabled = true,
+    ESP_TeamCheck = true, -- Não mostrar ESP em companheiros de equipe
+    ESP_BoxColor = Color3.fromRGB(255, 0, 0), -- Vermelho para inimigos
+    ESP_BoxThickness = 2, -- Espessura da linha da caixa
+
+    Aimbot_Enabled = true,
+    Aimbot_Key = Enum.UserInputType.MouseButton2, -- Botão direito do mouse para ativar Aimbot
+    Aimbot_FOV = 100, -- Campo de Visão do Aimbot (raio em pixels na tela)
+    Aimbot_TargetPart = "Head", -- Parte do corpo para mirar (Head, HumanoidRootPart, Torso)
+    Aimbot_Smoothness = 0.1, -- Suavidade do Aimbot (0 = instantâneo, 1 = muito suave)
+    Aimbot_TeamCheck = true, -- Não mirar em companheiros de equipe
+}
+
+-- Variáveis Globais (Não Modifique)
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Camera = Workspace.CurrentCamera
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local Target = nil -- O alvo atual do Aimbot
+local ESP_Boxes = {} -- Tabela para armazenar as caixas ESP
+
+-- Função auxiliar para verificar se o jogador é um inimigo
+local function IsEnemy(player)
+    if not player or player == LocalPlayer then return false end
+    if Settings.Aimbot_TeamCheck or Settings.ESP_TeamCheck then
+        return player.Team ~= LocalPlayer.Team
+    end
+    return true
+end
+
+-- Função para criar uma caixa ESP
+local function CreateESPBox(part)
+    local box = Instance.new("BoxHandleAdornment")
+    box.Adornee = part.Parent -- O adornee deve ser o modelo do jogador (HumanoidRootPart.Parent)
+    box.Color3 = Settings.ESP_BoxColor
+    box.AdornToPart = true -- Fazer com que a caixa siga a parte
+    box.AlwaysOnTop = true
+    box.ZIndex = 10
+    box.Transparency = 0 -- Totalmente visível
+    box.Visible = false -- Inicialmente invisível
+    box.Parent = PlayerGui -- Colocar na PlayerGui para ser renderizado no cliente
+    return box
+end
+
+-- Função para atualizar a posição e tamanho da caixa ESP
+local function UpdateESPBox(box, targetPart)
+    local success, screenPos = Camera:WorldToScreenPoint(targetPart.Position)
+    if not success then
+        box.Visible = false
+        return
+    end
+
+    local distance = (Camera.CFrame.Position - targetPart.Position).Magnitude
+    local scaleFactor = 1 / (distance * 0.1) -- Ajustar a escala com base na distância
+    local boxSizeX = 50 * scaleFactor
+    local boxSizeY = 100 * scaleFactor
+
+    -- Calcular a AABB (Axis-Aligned Bounding Box) para o HumanoidRootPart
+    local hrp = targetPart.Parent:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local minX, maxX = math.huge, -math.huge
+        local minY, maxY = math.huge, -math.huge
+
+        for _, part in pairs(targetPart.Parent:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide and part.Transparency < 1 then
+                local corners = {
+                    part.CFrame * CFrame.new(part.Size.X/2, part.Size.Y/2, part.Size.Z/2),
+                    part.CFrame * CFrame.new(part.Size.X/2, part.Size.Y/2, -part.Size.Z/2),
+                    part.CFrame * CFrame.new(part.Size.X/2, -part.Size.Y/2, part.Size.Z/2),
+                    part.CFrame * CFrame.new(part.Size.X/2, -part.Size.Y/2, -part.Size.Z/2),
+                    part.CFrame * CFrame.new(-part.Size.X/2, part.Size.Y/2, part.Size.Z/2),
+                    part.CFrame * CFrame.new(-part.Size.X/2, part.Size.Y/2, -part.Size.Z/2),
+                    part.CFrame * CFrame.new(-part.Size.X/2, -part.Size.Y/2, part.Size.Z/2),
+                    part.CFrame * CFrame.new(-part.Size.X/2, -part.Size.Y/2, -part.Size.Z/2),
+                }
+                for _, cornerCFrame in ipairs(corners) do
+                    local s, p = Camera:WorldToScreenPoint(cornerCFrame.Position)
+                    if s then
+                        minX = math.min(minX, p.X)
+                        maxX = math.max(maxX, p.X)
+                        minY = math.min(minY, p.Y)
+                        maxY = math.max(maxY, p.Y)
+                    end
+                end
+            end
+        end
+
+        if maxX > minX and maxY > minY then
+            box.Size = Vector3.new(maxX - minX, maxY - minY, 0.1) -- Z é pequeno pois é uma caixa 2D
+            box.Position = Vector3.new((minX + maxX) / 2, (minY + maxY) / 2, screenPos.Z)
+            box.Visible = true
+        else
+            box.Visible = false
+        end
+    else
+        box.Visible = false
+    end
+end
+
+-- Loop de renderização principal para ESP
+RunService.RenderStepped:Connect(function()
+    if Settings.ESP_Enabled then
+        for _, player in pairs(Players:GetPlayers()) do
+            if IsEnemy(player) and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local hrp = player.Character.HumanoidRootPart
+                if not ESP_Boxes[player.UserId] then
+                    ESP_Boxes[player.UserId] = CreateESPBox(hrp)
+                end
+                UpdateESPBox(ESP_Boxes[player.UserId], hrp)
+            else
+                if ESP_Boxes[player.UserId] then
+                    ESP_Boxes[player.UserId]:Destroy()
+                    ESP_Boxes[player.UserId] = nil
+                end
+            end
+        end
+
+        -- Remover caixas de jogadores que saíram
+        for userId, box in pairs(ESP_Boxes) do
+            if not Players:GetPlayerByUserId(userId) or not Players:GetPlayerByUserId(userId).Character then
+                box:Destroy()
+                ESP_Boxes[userId] = nil
+            end
+        end
+    else
+        -- Desativar e destruir todas as caixas ESP se o ESP for desativado
+        for userId, box in pairs(ESP_Boxes) do
+            box:Destroy()
+            ESP_Boxes[userId] = nil
+        end
+    end
+end)
+
+-- Função para encontrar o alvo mais próximo dentro do FOV
+local function FindTarget()
+    local closestTarget = nil
+    local minDistance = math.huge
+    local minFOV = Settings.Aimbot_FOV
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if IsEnemy(player) and player.Character and player.Character:FindFirstChild(Settings.Aimbot_TargetPart) then
+            local targetPart = player.Character:FindFirstChild(Settings.Aimbot_TargetPart)
+            local success, screenPos = Camera:WorldToScreenPoint(targetPart.Position)
+
+            if success then
+                -- O ponto central da tela
+                local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                -- Distância do alvo ao centro da tela
+                local distance = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
+
+                if distance <= minFOV then
+                    -- Verificar se o alvo é visível (raycast)
+                    local origin = Camera.CFrame.Position
+                    local direction = (targetPart.Position - origin).Unit
+                    local ray = Ray.new(origin, direction * (targetPart.Position - origin).Magnitude)
+                    local hit, position = Workspace:FindPartOnRayWithIgnoreList(ray, {LocalPlayer.Character, player.Character})
+
+                    -- Se o raycast não atingir nada ou atingir o alvo, ele é visível
+                    if hit == targetPart or (hit and hit:IsDescendantOf(player.Character)) then
+                        if distance < minDistance then
+                            minDistance = distance
+                            closestTarget = targetPart
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return closestTarget
+end
+
+-- Loop de atualização do Aimbot
+RunService.Stepped:Connect(function()
+    if Settings.Aimbot_Enabled and UserInputService:IsKeyDown(Settings.Aimbot_Key) then
+        Target = FindTarget()
+        if Target then
+            local rootPart = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if rootPart then
+                local currentCFrame = Camera.CFrame
+                local targetPosition = Target.Position
+
+                -- Calcular a nova CFrame da câmera para olhar para o alvo
+                local newCFrame = CFrame.new(currentCFrame.Position, targetPosition)
+
+                -- Interpolar suavemente para a nova CFrame
+                Camera.CFrame = currentCFrame:Lerp(newCFrame, Settings.Aimbot_Smoothness)
+            end
+        end
+    else
+        Target = nil -- Resetar o alvo se a tecla não estiver pressionada ou Aimbot desativado
+    end
+end)
+
+-- Mensagem de confirmação no console do executor
+print("Arsenal Simple Script Loaded! (ESP: " .. tostring(Settings.ESP_Enabled) .. ", Aimbot: " .. tostring(Settings.Aimbot_Enabled) .. ")")
